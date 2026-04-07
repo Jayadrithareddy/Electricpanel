@@ -4,10 +4,14 @@ import io
 import svgwrite as svg
 import base64
 
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPDF
+from reportlab.platypus import PageBreak
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="Professional Microgrid SLD Generator", layout="wide")
@@ -85,7 +89,7 @@ st.markdown("""
         backdrop-filter: blur(10px);
     }
 </style>
-<div class="main-title"> Smart Microgrid Panel SLD Generator</div>
+<div class="main-title">Microgrid Panel SLD Generator</div>
 """, unsafe_allow_html=True)
 
 # ---------------- INPUTS (Sidebar & Main) ----------------
@@ -96,15 +100,26 @@ with st.sidebar:
         solar_kw = st.number_input("Solar (kWp)", value=100, min_value=0)
         grid_kw = st.number_input("Grid (kW)", value=120, min_value=0)
         num_dg = st.number_input("Number of DGs", value=2, min_value=0, max_value=4)
-        num_outputs = st.number_input("Outgoing Feeders", value=3, min_value=1, max_value=5)
-        num_poles = st.selectbox("System Phases/Poles", [3, 4], index=1)
+        dg_ratings = []
+        if num_dg > 0:
+            st.markdown(
+                "<div style='font-size:13px; color:#64748b; margin-top:5px; margin-bottom:5px;'>DG Specifications</div>",
+                unsafe_allow_html=True
+            )
+            for i in range(int(num_dg)):
+                dg = st.number_input(f"DG {i+1} Rating (kVA)", value=250, key=f"dg_in_{i}")
+                dg_ratings.append(dg)
+        num_outputs = st.number_input("Outgoing Feeders", value=3, min_value=1, max_value=10)
+        mccb_outputs = []
+        if num_outputs > 0:
+            st.markdown("<div style='font-size:13px; color:#64748b; margin-top:5px; margin-bottom:5px;'>Outgoing Specifications</div>", unsafe_allow_html=True)
+            for i in range(int(num_outputs)):
+                default_val = 400 if i < 2 else 250
+                out_r = st.number_input(f"O/G {i+1} Rating (Amp)", value=default_val, key=f"og_in_{i}")
+                mccb_outputs.append(out_r)
 
-    dg_ratings = []
-    if num_dg > 0:
-        st.subheader("DG Specifications")
-        for i in range(int(num_dg)):
-            dg = st.number_input(f"DG {i+1} Rating (kVA)", value=250, key=f"dg_in_{i}")
-            dg_ratings.append(dg)
+        busbar_material = st.selectbox("Busbar Material", ["Copper", "Aluminium"], index=1)
+        num_poles = st.selectbox("System Phases/Poles", [1, 2, 3, 4, 5], index=1)
 
     st.divider()
     submit = st.button("Generate Final SLD & BOM")
@@ -120,40 +135,51 @@ def get_mccb_rating(current):
     return STANDARD_MCCBS[-1]
 
 V = 415
+PF = 0.8
+# Power Factor logic: I = P / (sqrt(3) * V * PF)
+
 # Incomer currents
-i_solar = (solar_kw*1000)/(math.sqrt(3)*V*0.8) if solar_kw > 0 else 0
+i_solar = (solar_kw*1000)/(math.sqrt(3)*V*PF) if solar_kw > 0 else 0
 mccb_solar = get_mccb_rating(i_solar) if solar_kw > 0 else 0
 
-i_grid = (grid_kw*1000)/(math.sqrt(3)*V*0.8) if grid_kw > 0 else 0
+i_grid = (grid_kw*1000)/(math.sqrt(3)*V*PF) if grid_kw > 0 else 0
 mccb_grid = get_mccb_rating(i_grid) if grid_kw > 0 else 0
 
 dg_mccbs = []
 dg_currents = []
 for dg in dg_ratings:
-    i = (dg*1000)/(math.sqrt(3)*V)
+    # User's logic: I = kVA*1000 / (sqrt(3) * V * PF)
+    i = (dg*1000)/(math.sqrt(3)*V*PF)
     dg_currents.append(i)
     dg_mccbs.append(get_mccb_rating(i))
 
-# Output logic (image-inspired defaults or balanced load)
+# Output logic
 total_i = i_solar + i_grid + sum(dg_currents)
-mccb_outputs = []
-if num_outputs == 3:
-    mccb_outputs = [400, 400, 250] # Matches user image configuration
-else:
-    avg_out_i = total_i / num_outputs
-    for _ in range(int(num_outputs)):
-        mccb_outputs.append(get_mccb_rating(avg_out_i))
+
+# Busbar Sizing
+density = 1.6 if busbar_material == "Copper" else 1.0
+busbar_area = total_i / density
+
+# Recommended size suggestion (e.g. Width x 10mm)
+suggested_width = math.ceil(busbar_area / 10 / 5) * 5 # Round up to nearest 5mm width for 10mm thickness
+if suggested_width < 20: suggested_width = 20
+busbar_spec = f"{suggested_width} x 10 mm {busbar_material}"
+
+# --- FLAG/WARNING CHECK ---
+sum_outgoing_rating = sum(mccb_outputs)
+if total_i > sum_outgoing_rating:
+    st.warning(f"⚠️ **Caution:** Total source/busbar current ({total_i:.2f}A) is higher than the total outgoing breaker rating ({sum_outgoing_rating}A). The outgoing breaker rating is lesser than total current.")
 
 # ---------------- DRAWING HELPERS (SVG) ----------------
 
 def draw_mccb(dwg, x, y, rating, poles, label, side="left"):
     # Main vertical lines (ensure break for symbol)
     dwg.add(dwg.line(start=(x, y-50), end=(x, y-18), stroke="white", stroke_width=2))
-    dwg.add(dwg.line(start=(x, y+18), end=(x, y+50), stroke="white", stroke_width=2))
+    dwg.add(dwg.line(start=(x, y+12), end=(x, y+50), stroke="white", stroke_width=2))
     
     # Breaker Arc Symbol (Standard SLD)
     dwg.add(dwg.path(
-        d=f"M{x},{y-18} A18,18 0 0,0 {x+18},{y+15}",
+        d=f"M{x},{y-18} A14,14 0 0,0 {x+2},{y+12}",
         stroke="#10b981", fill="none", stroke_width=2.5
     ))
     
@@ -207,10 +233,11 @@ if submit:
     # 1. GENERATE SLD SVG
     def generate_sld():
         width, height = 1450, 850
-        dwg = svg.Drawing(size=(f"{width}px", f"{height}px"), profile='full')
+        dwg = svg.Drawing(size=(width, height), profile='full')
+        dwg.viewbox(0, 0, width, height)
         
         # Border & Title Frame
-        dwg.add(dwg.rect((15, 15), (width-30, height-30), fill="#020617", stroke="#334155", stroke_width=2, rx=15))
+        dwg.add(dwg.rect((0, 0), (width, height), fill="#020617", stroke="#334155", stroke_width=2, rx=15))
         
         y_division = 380
         dwg.add(dwg.line((30, y_division), (width-30, y_division), stroke="#475569", stroke_width=1, stroke_dasharray="8,4"))
@@ -308,14 +335,84 @@ if submit:
     # 3. PDF BOM GENERATOR
     def generate_pdf_report():
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        # Set margins for a professional look
+        doc = SimpleDocTemplate(buffer, pagesize=A4, 
+                                rightMargin=45, leftMargin=45, 
+                                topMargin=45, bottomMargin=45)
         styles = getSampleStyleSheet()
+        
+        # Custom styles for more premium feel
+        title_style = styles['Title']
+        title_style.fontSize = 22
+        title_style.textColor = colors.HexColor("#7c3aed")
+        title_style.alignment = 1 # Center
+        
+        h2_style = styles['Heading2']
+        h2_style.fontSize = 16
+        h2_style.textColor = colors.HexColor("#4c1d95")
+        h2_style.spaceBefore = 12
+        h2_style.spaceAfter = 8
+        
+        normal_style = styles['Normal']
+        normal_style.fontSize = 10
+        normal_style.leading = 13
+        normal_style.alignment = 4 # Justify
+
         story = []
+
+        # --- PAGE 1: SYSTEM OVERVIEW & SLD ---
+        story.append(Paragraph("Microgrid Panel Technical Report", title_style))
+        story.append(Spacer(1, 15))
         
-        story.append(Paragraph("Microgrid Panel Bill Of Material (BOM)", styles['Title']))
-        story.append(Spacer(1, 25))
+        story.append(Paragraph("1. System Overview", h2_style))
+        description = f"""
+        This report details the configuration and material requirements for a customized Microgrid Panel. 
+        The system handles <b>{num_dg} DG(s)</b>, 
+        {("<b>Grid supply</b> of " + str(grid_kw) + " kW,") if grid_kw > 0 else ""} 
+        {("and <b>Solar PV</b> of " + str(solar_kw) + " kWp.") if solar_kw > 0 else ""}
+        Managed via a centralized Microgrid Controller (MGC) for seamless power source management.
+        """
+        story.append(Paragraph(description, normal_style))
+        story.append(Spacer(1, 15))
         
-        table_data = [["Sr No", "Component", "Rating", "Poles", "Qty"]]
+        story.append(Paragraph("2. Single Line Diagram (SLD)", h2_style))
+        
+        # Save SVG temporarily
+        with open("temp_sld.svg", "w", encoding="utf-8") as f:
+            f.write(sld_svg)
+
+        # Convert SVG → drawing
+        try:
+            drawing = svg2rlg("temp_sld.svg")
+            # Explicitly set the width and height we expect
+            drawing.width = 1450
+            drawing.height = 850
+            
+            # Calculate scale to fit width (A4 width - margins = 595 - 90 = 505)
+            scaling_factor = 505.0 / 1450.0
+            drawing.scale(scaling_factor, scaling_factor)
+            
+            # Update width/height after scaling so ReportLab positions subsequent elements correctly
+            drawing.width = 1450 * scaling_factor
+            drawing.height = 850 * scaling_factor
+            
+            # Center the drawing using a wrapper table
+            sld_table = Table([[drawing]], colWidths=[505])
+            sld_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+            story.append(sld_table)
+        except Exception as e:
+            story.append(Paragraph(f"[Error rendering SLD: {str(e)}]", normal_style))
+
+        story.append(Spacer(1, 20))
+        story.append(Paragraph("<i>Note: The diagram above illustrates the electrical topology and power flow between sources and outgoing feeders.</i>", normal_style))
+        
+        story.append(PageBreak())   
+        
+        # --- PAGE 2: BILL OF MATERIALS & SPECS ---
+        story.append(Paragraph("3. Bill Of Material (BOM)", h2_style))
+        story.append(Spacer(1, 8))
+        
+        table_data = [["Sr No", "Component / Description", "Rating", "Poles", "Qty"]]
         sr = 1
         if solar_kw > 0:
             table_data.append([sr, "Solar Incomer MCCB", f"{mccb_solar}A", f"{num_poles}P", "1"])
@@ -327,23 +424,44 @@ if submit:
             table_data.append([sr, f"DG {i+1} Incomer MCCB", f"{r}A", f"{num_poles}P", "1"])
             sr+=1
         for i, r in enumerate(mccb_outputs):
-            table_data.append([sr, f"Outgoing Feeder O/G {i+1}", f"{r}A", f"{num_poles}P", "1"])
+            table_data.append([sr, f"Outgoing Feeder (O/G {i+1})", f"{r}A", f"{num_poles}P", "1"])
             sr+=1
         
-        table_data.append([sr, "Microgrid Controller (MGC)", "Smart AMF", "-", "1"])
+        table_data.append([sr, f"{busbar_material} Main Busbar", f"{total_i:.1f}A Rated", "-", f"1 Set ({busbar_spec})"])
+        sr += 1
+        table_data.append([sr, "Microgrid Controller (MGC)", "Standard", "-", "1"])
+        sr += 1
         
-        table = Table(table_data, colWidths=[50, 180, 100, 80, 50])
+        # Adjusted colWidths to fit margins (505 total)
+        table = Table(table_data, colWidths=[40, 200, 95, 70, 100])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#7c3aed")),
             ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
             ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0,0), (-1,0), 10),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#f8fafc")),
             ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.whitesmoke, colors.white])
         ]))
         story.append(table)
-        story.append(Spacer(1, 30))
-        story.append(Paragraph(f"<b>System Highlights:</b><br/>• Total Capacity Management: {total_i:.2f}A<br/>• Suggested Busbar: 2 Runs 50x10 mm Al", styles['Normal']))
+        
+        story.append(Spacer(1, 25))
+        story.append(Paragraph("4. Technical Highlights", h2_style))
+        
+        highlights = [
+            f"<b>Total Busbar Current:</b> {total_i:.2f} A",
+            f"<b>Required Busbar Area:</b> {busbar_area:.2f} mm²",
+            f"<b>Recommended Busbar:</b> {busbar_spec}",
+            f"<b>System:</b> {num_poles} Pole Configuration"
+        ]
+        
+        for h in highlights:
+            story.append(Paragraph(f"• {h}", normal_style))
+            story.append(Spacer(1, 3))
+
+        
         
         doc.build(story)
         buffer.seek(0)
@@ -354,9 +472,7 @@ if submit:
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("📄 Download PDF BOM", data=generate_pdf_report(), file_name="Microgrid_Panel_BOM.pdf", mime="application/pdf")
-    with c2:
-        st.download_button("🖼️ Download SVG SLD", data=sld_svg, file_name="Microgrid_Panel_SLD.svg", mime="image/svg+xml")
-
+    
 else:
     st.info("👈 Use the designer panel on the left to configure your Microgrid and click 'Generate Final SLD & BOM'.")
     st.image("https://img.icons8.com/clouds/200/electricity.png")
