@@ -11,6 +11,8 @@ from reportlab.lib import colors
 from svglib.svglib import svg2rlg
 from reportlab.graphics import renderPDF
 from reportlab.platypus import PageBreak
+from reportlab.pdfgen import canvas
+import datetime
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="Professional Microgrid SLD Generator", layout="wide")
@@ -19,35 +21,35 @@ st.set_page_config(page_title="Professional Microgrid SLD Generator", layout="wi
 st.markdown("""
 <style>
     .stApp {
-        background: linear-gradient(135deg, #020617, #0f172a);
+        background: linear-gradient(135deg, #062a30, #020617);
         font-family: 'Inter', sans-serif;
     }
     .main-title {
         text-align: center;
         font-size: 42px;
         font-weight: 800;
-        color: #a78bfa;
+        color: #c37c5a;
         margin-bottom: 30px;
-        text-shadow: 0 0 20px rgba(167, 139, 250, 0.3);
+        text-shadow: 0 0 20px rgba(195, 124, 91, 0.3);
     }
     .section-title {
         font-size: 22px;
         font-weight: 600;
-        color: #c4b5fd;
+        color: #19988b;
         margin-top: 25px;
         margin-bottom: 12px;
-        border-bottom: 1px solid rgba(196, 181, 253, 0.2);
+        border-bottom: 1px solid rgba(25, 152, 139, 0.2);
         padding-bottom: 5px;
     }
     [data-testid="stSidebar"] h1,
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3 {
-        color: #0f172a !important;
+        color: #062a30 !important;
         font-weight: 800 !important;
     }
     [data-testid="stExpander"] summary p,
     .streamlit-expanderHeader p {
-        color: #0f172a !important;
+        color: #062a30 !important;
         font-weight: 800 !important;
         font-size: 16px !important;
     }
@@ -59,7 +61,7 @@ st.markdown("""
         opacity: 1 !important;
     }
     .stButton>button {
-        background: linear-gradient(90deg, #7c3aed, #6d28d9);
+        background: linear-gradient(90deg, #19988b, #15803d);
         color: white;
         border: none;
         padding: 12px 30px;
@@ -67,16 +69,16 @@ st.markdown("""
         border-radius: 8px;
         font-weight: 700;
         transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+        box-shadow: 0 4px 15px rgba(25, 152, 139, 0.3);
     }
     .stButton>button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(124, 58, 237, 0.5);
-        background: linear-gradient(90deg, #8b5cf6, #7c3aed);
+        box-shadow: 0 6px 20px rgba(25, 152, 139, 0.5);
+        background: linear-gradient(90deg, #187e6c, #19988b);
     }
     .result-card {
-        background: rgba(15, 23, 42, 0.8);
-        border: 1px solid rgba(124, 58, 237, 0.3);
+        background: rgba(6, 42, 48, 0.8);
+        border: 1px solid rgba(195, 124, 91, 0.3);
         padding: 15px;
         border-radius: 12px;
         margin-bottom: 15px;
@@ -91,8 +93,8 @@ st.markdown("""
         color: #fca5a5;
     }
     .info-card {
-        background: rgba(59, 130, 246, 0.1);
-        border-left: 4px solid #3b82f6;
+        background: rgba(25, 152, 139, 0.1);
+        border-left: 4px solid #19988b;
         padding: 15px;
         border-radius: 8px;
         margin-bottom: 15px;
@@ -100,8 +102,8 @@ st.markdown("""
     }
     /* ── Metrics row styling ── */
     [data-testid="stMetric"] {
-        background: rgba(15, 23, 42, 0.8);
-        border: 1px solid rgba(124, 58, 237, 0.3);
+        background: rgba(6, 42, 48, 0.8);
+        border: 1px solid rgba(195, 124, 91, 0.3);
         border-radius: 12px;
         padding: 16px 20px;
         backdrop-filter: blur(10px);
@@ -113,7 +115,7 @@ st.markdown("""
         letter-spacing: 0.5px;
     }
     [data-testid="stMetricValue"] {
-        color: #a78bfa !important;
+        color: #19988b !important;
         font-size: 22px !important;
         font-weight: 800 !important;
     }
@@ -468,22 +470,74 @@ if submit:
         unsafe_allow_html=True,
     )
 
+    # ---------------- PDF UTILITIES ----------------
+    class NumberedCanvas(canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            canvas.Canvas.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            """Add page info to each page (Page X of Y)"""
+            num_pages = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self.draw_footer(num_pages)
+                canvas.Canvas.showPage(self)
+            canvas.Canvas.save(self)
+
+        def draw_footer(self, page_count):
+            self.saveState()
+            
+            # --- 1. Top Right Logo ---
+            logo_path = "Kirloskar Oil Engine Logo.png"
+            logo_w, logo_h = 100, 35
+            # Position at top right corner, high enough to avoid heading overlap
+            self.drawImage(logo_path, A4[0] - 45 - logo_w, A4[1] - 30 - logo_h, 
+                           width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+
+            # --- 2. Footer Styling ---
+            self.setFont("Helvetica", 8)
+            self.setStrokeColor(colors.HexColor("#cbd5e1")) 
+            self.setLineWidth(0.5)
+            # Horizontal line above footer
+            self.line(45, 50, A4[0] - 45, 50)
+            
+            # Footer Text
+            self.setFillColor(colors.HexColor("#475569"))
+            # Left: Company Name
+            self.drawString(45, 35, "Kirloskar Oil Engines Ltd.")
+            
+            # Center: Dynamic Date and Time
+            now = datetime.datetime.now().strftime("%d-%b-%Y %I:%M %p")
+            self.drawCentredString(A4[0]/2.0, 35, f"Report Generated: {now}")
+            
+            # Right: Page number (Page X of Y)
+            page_num = self.getPageNumber()
+            self.drawRightString(A4[0] - 45, 35, f"Page {page_num} of {page_count}")
+            
+            self.restoreState()
+
     # ── 3. PDF BOM GENERATOR ─────────────────────────────────────────────────
     def generate_pdf_report():
         buffer = io.BytesIO()
+        # Increased topMargin to 80 to prevent overlap with the logo
         doc = SimpleDocTemplate(buffer, pagesize=A4,
                                 rightMargin=45, leftMargin=45,
-                                topMargin=45, bottomMargin=45)
+                                topMargin=80, bottomMargin=45)
         styles = getSampleStyleSheet()
 
         title_style            = styles["Title"]
         title_style.fontSize   = 22
-        title_style.textColor  = colors.HexColor("#7c3aed")
+        title_style.textColor  = colors.HexColor("#c37c5a")
         title_style.alignment  = 1
 
         h2_style             = styles["Heading2"]
         h2_style.fontSize    = 16
-        h2_style.textColor   = colors.HexColor("#4c1d95")
+        h2_style.textColor   = colors.HexColor("#19988b")
         h2_style.spaceBefore = 12
         h2_style.spaceAfter  = 8
 
@@ -569,9 +623,10 @@ if submit:
                            f"{total_busbar_current:.1f}A Rated", "-", f"1 Set ({busbar_spec})"]); sr += 1
         table_data.append([str(sr), "Microgrid Controller (MGC)", "Standard", "-", "1"])
 
-        table = Table(table_data, colWidths=[40, 200, 95, 70, 100])
+        # Optimized column widths: SrNo(30), Desc(150), Rating(90), Poles(45), Qty(190)
+        table = Table(table_data, colWidths=[30, 150, 90, 45, 190])
         table.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#7c3aed")),
+            ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#19988b")),
             ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.whitesmoke),
             ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
             ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
@@ -579,7 +634,7 @@ if submit:
             ("BACKGROUND",    (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
             ("GRID",          (0, 0), (-1, -1), 0.5, colors.grey),
             ("FONTSIZE",      (0, 0), (-1, -1), 9),
-            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, colors.HexColor("#f0f4f8")]),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
         ]))
         story.append(table)
         story.append(Spacer(1, 20))
@@ -594,7 +649,9 @@ if submit:
         )
         story.append(Paragraph(notes, normal_style))
 
-        doc.build(story)
+        story.append(Paragraph(notes, normal_style))
+
+        doc.build(story, canvasmaker=NumberedCanvas)
         buffer.seek(0)
         return buffer
 
